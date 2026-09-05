@@ -185,7 +185,6 @@ export const DecisionTrace: React.FC<Props> = ({ detail }) => {
 
       <Connector />
 
-      {/* ── Step 4: Recovery Executor ─────────────────────────────────────── */}
       <SectionCard
         title="Recovery Executor  ·  Final Action"
         icon={
@@ -216,25 +215,28 @@ export const DecisionTrace: React.FC<Props> = ({ detail }) => {
         <Field label="Execution Status">
           <Badge value={iv.execution_status} type="status" />
         </Field>
-        <Field label="Recovered">
-          {iv.recovered_amount_paise > 0 ? (
-            <span className="text-green-400 font-bold tabular-nums">
-              {formatPaise(iv.recovered_amount_paise)}
+
+        {/* Recovery Outcome explicitly distinct from Action Execution */}
+        <div className="pt-2 mt-2 border-t border-gray-800">
+          <Field label="Recovery Outcome">
+            <span className={`text-xs font-semibold ${
+              detail.status === 'SUCCESS' ? 'text-green-400' :
+              detail.status === 'AWAITING_PAYMENT' ? 'text-amber-400' :
+              'text-gray-400'
+            }`}>
+              {detail.status === 'SUCCESS' ? 'RECOVERED' : detail.status}
             </span>
-          ) : (
-            <span className="text-gray-500">—</span>
-          )}
-        </Field>
-        {executorSuccess && (
-          <div className="pt-2 mt-2 border-t border-green-900/40">
-            <p className="text-green-400 text-xs font-medium">✓ Revenue successfully recovered</p>
-          </div>
-        )}
-        {executorFailed && (
-          <div className="pt-2 mt-2 border-t border-red-900/40">
-            <p className="text-red-400 text-xs">Recovery attempt did not succeed.</p>
-          </div>
-        )}
+          </Field>
+          <Field label="Recovered">
+            {detail.status === 'SUCCESS' && iv.recovered_amount_paise > 0 ? (
+              <span className="text-green-400 font-bold tabular-nums">
+                {formatPaise(iv.recovered_amount_paise)}
+              </span>
+            ) : (
+              <span className="text-gray-500 font-bold tabular-nums">₹0</span>
+            )}
+          </Field>
+        </div>
       </SectionCard>
     </div>
   );

@@ -178,19 +178,15 @@ def execute_recovery(
     elif final_action == RecoveryAction.SILENT_RETRY:
         # The retry was attempted: increment regardless of simulated outcome.
         transaction.attempt_count = int(transaction.attempt_count or 0) + 1
-        if _is_ground_truth_recoverable(transaction):
-            recovered_amount = _apply_success(transaction)
-            execution_status = ExecutionStatus.SUCCESS
-        else:
-            execution_status = ExecutionStatus.FAILED
+        execution_status = ExecutionStatus.SUCCESS
+        transaction.status = "AWAITING_PAYMENT"
+        # recovered_amount remains 0 until actual payment success.
 
     elif final_action == RecoveryAction.SEND_PAYMENT_LINK:
         # Customer-initiated re-attempt: does NOT count against the retry limit.
-        if _is_ground_truth_recoverable(transaction):
-            recovered_amount = _apply_success(transaction)
-            execution_status = ExecutionStatus.SUCCESS
-        else:
-            execution_status = ExecutionStatus.FAILED
+        execution_status = ExecutionStatus.SUCCESS
+        transaction.status = "AWAITING_PAYMENT"
+        # recovered_amount remains 0 until actual payment success.
 
     else:
         # Defensive guard against future enum extensions reaching here.

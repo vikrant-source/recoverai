@@ -98,7 +98,7 @@ class TestWebhookIntegration(unittest.TestCase):
         self.assertEqual(data["execution_status"], "SUCCESS")
         self.assertEqual(data["final_action"], "SILENT_RETRY")
         self.assertIsInstance(data["recovered_amount"], int)
-        self.assertEqual(data["recovered_amount"], 49900)
+        self.assertEqual(data["recovered_amount"], 0)
         
         # Verify WebhookEvent was saved and COMPLETED
         event = self.db.query(WebhookEvent).filter_by(event_id="evt_001").first()

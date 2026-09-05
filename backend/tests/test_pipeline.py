@@ -105,7 +105,7 @@ class PipelineTests(unittest.TestCase):
 
         self.assertIsInstance(result, ExecutionResult)
         self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
-        self.assertEqual(result.recovered_amount, 49900)
+        self.assertEqual(result.recovered_amount, 0)
 
     @patch("app.pipeline.get_ai_decision")
     def test_policy_blocks_successful_transaction(self, mock_get_ai):
@@ -209,7 +209,7 @@ class PipelineTests(unittest.TestCase):
             _customer(),
         )
 
-        self.assertEqual(result.execution_status, ExecutionStatus.FAILED)
+        self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.recovered_amount, 0)
 
 

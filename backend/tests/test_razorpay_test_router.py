@@ -111,3 +111,103 @@ class TestRazorpayTestRouter:
         
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
+
+    def test_simulate_payment_success_recovers_money(self):
+        # Initial state
+        txn_before = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        txn_before.status = "AWAITING_PAYMENT"
+        self.db.commit()
+
+        # We need an intervention row to ensure it's also updated
+        from app.models import Intervention
+        intervention = Intervention(
+            txn_id="txn_test_router_001",
+            ai_recommendation="SEND_PAYMENT_LINK",
+            ai_failure_classification="test",
+            ai_confidence=1.0,
+            ai_reasoning="test",
+            policy_decision="ALLOW",
+            policy_reason="test",
+            final_action="SEND_PAYMENT_LINK",
+            execution_status="SUCCESS",
+            recovered_amount=0
+        )
+        self.db.add(intervention)
+        self.db.commit()
+
+        # Call endpoint
+        payload = {"txn_id": "txn_test_router_001"}
+        response = client.post("/api/razorpay-test/simulate-payment-success", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["recovered_amount"] == 75000
+
+        # Verify DB updates
+        txn_after = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        assert txn_after.status == "SUCCESS"
+        assert txn_after.recovered_amount == 75000
+        assert txn_after.revenue_at_risk == 0
+
+        # Verify intervention update
+        iv_after = self.db.query(Intervention).filter_by(txn_id="txn_test_router_001").first()
+        assert iv_after.recovered_amount == 75000
+
+    def test_simulate_payment_success_idempotent_on_success(self):
+        txn = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        txn.status = "SUCCESS"
+        txn.recovered_amount = 75000
+        self.db.commit()
+
+        payload = {"txn_id": "txn_test_router_001"}
+        response = client.post("/api/razorpay-test/simulate-payment-success", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "already_success"
+        assert data["recovered_amount"] == 75000
+
+    def test_simulate_payment_success_fails_on_failed_status(self):
+        txn = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        txn.status = "FAILED"
+        self.db.commit()
+
+        payload = {"txn_id": "txn_test_router_001"}
+        response = client.post("/api/razorpay-test/simulate-payment-success", json=payload)
+
+        assert response.status_code == 400
+        assert "not AWAITING_PAYMENT" in response.json()["detail"]
+
+    def test_simulate_payment_success_fails_on_policy_blocked(self):
+        txn = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        txn.status = "FAILED"
+        self.db.commit()
+
+        # Simulate policy blocked (status stays FAILED, final_action DO_NOTHING)
+        from app.models import Intervention
+        intervention = Intervention(
+            txn_id="txn_test_router_001",
+            ai_recommendation="SEND_PAYMENT_LINK",
+            ai_failure_classification="test",
+            ai_confidence=1.0,
+            ai_reasoning="test",
+            policy_decision="BLOCK",
+            policy_reason="Blocked",
+            final_action="DO_NOTHING",
+            execution_status="SKIPPED",
+            recovered_amount=0
+        )
+        self.db.add(intervention)
+        self.db.commit()
+
+        payload = {"txn_id": "txn_test_router_001"}
+        response = client.post("/api/razorpay-test/simulate-payment-success", json=payload)
+
+        assert response.status_code == 400
+        assert "not AWAITING_PAYMENT" in response.json()["detail"]
+
+        # Verify no money recovered
+        txn_after = self.db.query(Transaction).filter_by(txn_id="txn_test_router_001").first()
+        assert txn_after.status == "FAILED"
+        assert txn_after.recovered_amount == 0

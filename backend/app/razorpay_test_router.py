@@ -138,3 +138,63 @@ def create_razorpay_test_order(
         key_id=key_id,
         txn_id=transaction.txn_id
     )
+
+
+class SimulatePaymentSuccessRequest(BaseModel):
+    txn_id: str
+
+
+@router.post("/simulate-payment-success")
+def simulate_payment_success(
+    req: SimulatePaymentSuccessRequest,
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Test Mode Only: Simulates receiving a successful payment outcome (e.g., payment.captured webhook).
+
+    This fulfills the financial invariant that merely executing a recovery action
+    (like SEND_PAYMENT_LINK) does not instantly recover money. This endpoint must be
+    called to transition the transaction from AWAITING_PAYMENT to SUCCESS and formally
+    recognize the revenue as recovered.
+    """
+    from .models import Intervention
+
+    transaction = db.query(Transaction).filter(Transaction.txn_id == req.txn_id).first()
+    if not transaction:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Transaction '{req.txn_id}' not found in database."
+        )
+
+    if transaction.status == "SUCCESS":
+        return {"status": "already_success", "recovered_amount": transaction.recovered_amount}
+
+    if transaction.status != "AWAITING_PAYMENT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot simulate success. Transaction is in '{transaction.status}' state, not AWAITING_PAYMENT."
+        )
+
+    # Recover the revenue
+    recovered = int(transaction.revenue_at_risk)
+    transaction.status = "SUCCESS"
+    transaction.recovered_amount = recovered
+    transaction.revenue_at_risk = 0
+
+    # Also update the latest intervention so the dashboard reads the correct recovered amount
+    intervention = (
+        db.query(Intervention)
+        .filter(Intervention.txn_id == req.txn_id)
+        .order_by(Intervention.created_at.desc())
+        .first()
+    )
+    if intervention:
+        intervention.recovered_amount = recovered
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "txn_id": transaction.txn_id,
+        "recovered_amount": recovered
+    }

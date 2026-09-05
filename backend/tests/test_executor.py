@@ -160,45 +160,29 @@ class ExecutorActionTests(unittest.TestCase):
         self.assertEqual(result.execution_status, ExecutionStatus.ESCALATED)
         self.assertEqual(result.recovered_amount, 0)
 
-    def test_silent_retry_recoverable_returns_success(self):
-        txn = _transaction(failure_description="[recoverable] Bank declined: low balance")
+    def test_silent_retry_sets_awaiting_payment(self):
+        txn = _transaction(failure_description="[recoverable] Sync error")
         result = execute_recovery(
             _mock_db(), txn, _customer(),
             _policy(RecoveryAction.SILENT_RETRY),
             _ai(RecoveryAction.SILENT_RETRY),
         )
+
         self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
-        self.assertEqual(result.recovered_amount, 49900)
-
-    def test_silent_retry_unrecovered_returns_failed(self):
-        txn = _transaction(failure_description="[unrecovered] Customer refused")
-        result = execute_recovery(
-            _mock_db(), txn, _customer(),
-            _policy(RecoveryAction.SILENT_RETRY),
-            _ai(RecoveryAction.SILENT_RETRY),
-        )
-        self.assertEqual(result.execution_status, ExecutionStatus.FAILED)
         self.assertEqual(result.recovered_amount, 0)
+        self.assertEqual(txn.status, "AWAITING_PAYMENT")
 
-    def test_send_payment_link_recoverable_returns_success(self):
-        txn = _transaction(failure_description="[recoverable] Low balance")
+    def test_send_payment_link_sets_awaiting_payment(self):
+        txn = _transaction(failure_description="[recoverable] Link error")
         result = execute_recovery(
             _mock_db(), txn, _customer(),
             _policy(RecoveryAction.SEND_PAYMENT_LINK),
             _ai(RecoveryAction.SEND_PAYMENT_LINK),
         )
-        self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
-        self.assertEqual(result.recovered_amount, 49900)
 
-    def test_send_payment_link_unrecovered_returns_failed(self):
-        txn = _transaction(failure_description="[unrecovered] Permanently declined")
-        result = execute_recovery(
-            _mock_db(), txn, _customer(),
-            _policy(RecoveryAction.SEND_PAYMENT_LINK),
-            _ai(RecoveryAction.SEND_PAYMENT_LINK),
-        )
-        self.assertEqual(result.execution_status, ExecutionStatus.FAILED)
+        self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.recovered_amount, 0)
+        self.assertEqual(txn.status, "AWAITING_PAYMENT")
 
 
 # ---------------------------------------------------------------------------
@@ -264,35 +248,6 @@ class FinancialIntegrityTests(unittest.TestCase):
                 )
                 self.assertEqual(txn.amount, original_amount, f"amount changed for action {action}")
 
-    def test_recovered_amount_is_integer_paise(self):
-        txn = _transaction(revenue_at_risk=79900, failure_description="[recoverable] test")
-        result = execute_recovery(
-            _mock_db(), txn, _customer(),
-            _policy(RecoveryAction.SEND_PAYMENT_LINK),
-            _ai(RecoveryAction.SEND_PAYMENT_LINK),
-        )
-        self.assertIsInstance(result.recovered_amount, int)
-        self.assertEqual(result.recovered_amount, 79900)
-
-    def test_recovered_amount_equals_pre_existing_revenue_at_risk(self):
-        """On success, recovered_amount must be the pre-existing revenue_at_risk value."""
-        revenue = 129900
-        txn = _transaction(revenue_at_risk=revenue, failure_description="[recoverable] test")
-        result = execute_recovery(
-            _mock_db(), txn, _customer(),
-            _policy(RecoveryAction.SILENT_RETRY),
-            _ai(RecoveryAction.SILENT_RETRY),
-        )
-        self.assertEqual(result.recovered_amount, revenue)
-
-    def test_revenue_at_risk_zeroed_on_success(self):
-        txn = _transaction(revenue_at_risk=49900, failure_description="[recoverable] test")
-        execute_recovery(
-            _mock_db(), txn, _customer(),
-            _policy(RecoveryAction.SEND_PAYMENT_LINK),
-            _ai(RecoveryAction.SEND_PAYMENT_LINK),
-        )
-        self.assertEqual(txn.revenue_at_risk, 0)
 
     def test_revenue_at_risk_unchanged_on_failure(self):
         txn = _transaction(revenue_at_risk=49900, failure_description="[unrecovered] test")
