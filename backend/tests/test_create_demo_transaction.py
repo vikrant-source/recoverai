@@ -26,10 +26,9 @@ def test_create_demo_transaction_is_idempotent():
     db = SharedTestingSessionLocal()
 
     try:
-        # Run 1: Should create the records
-        txn1, cust1 = create_demo_data(db)
+        (txn1, cust1), (txn2, cust2) = create_demo_data(db)
 
-        # Assert correct properties
+        # Assert correct properties for 001
         assert cust1.customer_id == DEMO_CUST_ID
         assert cust1.opted_out is False
 
@@ -43,20 +42,32 @@ def test_create_demo_transaction_is_idempotent():
         assert txn1.recovered_amount == 0
         assert txn1.currency == "INR"
 
-        # Verify exact counts in DB
+        # Verify exactly 1 of each exists for 001 and 002
         assert db.query(Customer).filter_by(customer_id=DEMO_CUST_ID).count() == 1
         assert db.query(Transaction).filter_by(txn_id=DEMO_TXN_ID).count() == 1
+        
+        assert db.query(Customer).filter_by(customer_id="cust_demo_002").count() == 1
+        
+        txn2 = db.query(Transaction).filter_by(txn_id="txn_demo_002").first()
+        assert txn2 is not None
+        assert txn2.customer_id == "cust_demo_002"
+        assert txn2.status == "FAILED"
+        assert txn2.attempt_count == 1
+        assert txn2.revenue_at_risk == DEMO_AMOUNT_PAISE
 
         # Run 2: Idempotent execution
-        txn2, cust2 = create_demo_data(db)
+        (txn1_run2, cust1_run2), (txn2_run2, cust2_run2) = create_demo_data(db)
 
         # Returned objects should be identical to DB state
-        assert txn2.txn_id == DEMO_TXN_ID
-        assert cust2.customer_id == DEMO_CUST_ID
+        assert txn1_run2.txn_id == DEMO_TXN_ID
+        assert cust1_run2.customer_id == DEMO_CUST_ID
 
-        # Counts must still be exactly 1
+        # Counts must still be exactly 1 for both
         assert db.query(Customer).filter_by(customer_id=DEMO_CUST_ID).count() == 1
         assert db.query(Transaction).filter_by(txn_id=DEMO_TXN_ID).count() == 1
+        
+        assert db.query(Customer).filter_by(customer_id="cust_demo_002").count() == 1
+        assert db.query(Transaction).filter_by(txn_id="txn_demo_002").count() == 1
 
     finally:
         db.close()
