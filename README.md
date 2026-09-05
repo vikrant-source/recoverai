@@ -2,11 +2,17 @@
 
 RecoverAI is an AI-powered revenue recovery agent that intelligently, yet safely, recovers revenue from failed payments.
 
-## 🚨 Synthetic / Test Mode
+## 🚨 Test Mode & Hackathon Scope
 
-**This is a hackathon demonstration project.**
-All payment events, webhook payloads, and recovery actions are entirely simulated and operate in **Synthetic / Test Mode**. 
-No real payments are processed, no live integrations with Razorpay exist, and **no real money is moved**. This project is not intended for production use.
+**This is a hackathon prototype.**
+
+RecoverAI integrates with **Razorpay Test Mode** for its demonstrated payment flow. It also supports synthetic/local webhook events for deterministic, fully offline demonstrations. In either case:
+
+- **No live/production Razorpay payments are processed.**
+- **No real money is moved.**
+- The ₹199 payment-success demonstration is a Test Mode / simulated confirmation — it is not a real financial charge.
+
+Do not mistake "no real money moved" for "no Razorpay integration" — the webhook pipeline, signature verification, and payment normalisation all run against Razorpay's Test Mode infrastructure. This project is not intended for production use.
 
 ## The Problem
 
@@ -184,11 +190,38 @@ Follow these instructions to run the project locally on Windows using PowerShell
    npm.cmd run dev
    ```
 
+## Database & Demo Data Setup
+
+A fresh clone has no database. The two scripts below initialize it. **Run them once, in order, after activating your virtual environment.**
+
+### Step 1 — Generate the synthetic dataset (one-time initialization)
+
+`backend/scripts/generate_data.py` creates the full synthetic dataset: ~250 customers and exactly 1,000 transactions with realistic INR amounts and failure scenarios.
+
+```powershell
+python backend/scripts/generate_data.py
+```
+
+> ⚠️ **This script resets the synthetic tables on every run.** Treat it as a **one-time initialization step** for a fresh environment. Do not rerun it against a database that already has live webhook data — it will wipe the existing records.
+
+### Step 2 — Provision the demo transaction (idempotent)
+
+`backend/scripts/create_demo_transaction.py` adds the specific `txn_demo_001` / `cust_demo_001` and `txn_demo_002` / `cust_demo_002` records needed for the Razorpay Test Mode ₹199 demo flow.
+
+```powershell
+python backend/scripts/create_demo_transaction.py
+```
+
+This script is **idempotent** — it is safe to run multiple times and will not create duplicates. It does **not** delete any existing data.
+
+---
+
 ## API Endpoints
 
 The FastAPI backend exposes the following endpoints:
 
 - `GET /health` : Health check for the API.
+
 - `POST /webhooks/payment` : Ingestion point for synthetic payment failure webhooks.
 - `GET /api/metrics` : Aggregated KPIs (Revenue at risk, recovered, etc.).
 - `GET /api/interventions` : Paginated and filterable list of all recovery interventions.
@@ -197,9 +230,12 @@ The FastAPI backend exposes the following endpoints:
 
 ## Webhook Example
 
-You can simulate a payment failure by sending a POST request to `/webhooks/payment`. 
-*This is a simulation and does not interact with any real payment gateway.*
-*Note: `txn_demo_001` must correspond to an existing transaction in your database when testing locally.*
+RecoverAI's webhook pipeline handles two event sources through the same processing path:
+
+- **Razorpay Test Mode:** `payment.failed` events from Razorpay's Test Mode are received, signature-verified, normalised, and fed into the recovery pipeline.
+- **Synthetic / local events:** You can inject a deterministic test event directly via `POST /webhooks/payment` without any Razorpay credentials. This is useful for offline demos, CI, and judge walkthroughs.
+
+The synthetic payload format is:
 
 ```json
 {
@@ -209,6 +245,8 @@ You can simulate a payment failure by sending a POST request to `/webhooks/payme
   "synthetic": true
 }
 ```
+
+> *Note: `txn_demo_001` must correspond to an existing transaction in your database. Run `create_demo_transaction.py` (see [Database & Demo Data Setup](#database--demo-data-setup)) before sending this payload.*
 
 ## Safety & Reliability
 
@@ -233,10 +271,34 @@ For judges reviewing the project, we suggest the following flow:
 
 1. **Open the Dashboard:** Navigate to `http://localhost:5173`.
 2. **Review Metrics:** Show the live API status, KPIs, and charts.
-3. **Inspect a Success:** Click a successful recovery event in the table. Show the Decision Trace modal where the AI recommendation matches the Policy approval and flows to the Executor.
+3. **Inspect a Successful Recovery:** Click a successfully recovered event in the table. Show the Decision Trace modal where the AI recommendation matches the Policy approval and flows to the Executor.
 4. **Inspect an Escalation:** Find an `ESCALATE` event in the table. Open the trace and show how the Policy Brakes actively overrode a risky AI recommendation.
-5. **Trigger a Webhook:** Send a synthetic webhook (via cURL, Postman, or a test script) and watch the dashboard update live.
+5. **Trigger a Webhook:** Send a synthetic or Razorpay Test Mode webhook and watch the dashboard update live.
 6. **Show Idempotency:** Resend the exact same webhook and demonstrate that duplicate processing is prevented.
+
+### The Recovery Pipeline (Step by Step)
+
+```
+FAILED payment
+  → Razorpay Test Mode webhook  ─┐
+  → Synthetic/local webhook      ┘  (either path enters the same pipeline)
+  → Idempotency Check
+  → Context Builder
+  → AI Brain  (recommends an action)
+  → Policy Brakes  (authorize / block / override)
+  → Recovery Executor  (records the intervention)
+  → Outcome
+```
+
+> **"An executed recovery action is not the same as recovered revenue."**
+
+- For `SEND_PAYMENT_LINK` and `SILENT_RETRY` actions, the transaction does **not** immediately count as recovered.
+- Payment success must actually be confirmed (via Test Mode or a simulated success callback).
+- **Only then** is `recovered_amount` recorded and `revenue_at_risk` reduced on the dashboard.
+
+### The ₹199 Demo
+
+The ₹199 recovery shown in the dashboard reflects a **Test Mode / simulated payment-success confirmation** — not an AI decision alone. The AI recommended the recovery action; the Policy Brakes authorised it; the Executor dispatched it; and only after the payment-success event was received did the ₹199 count as recovered revenue. The AI did not itself recover the ₹199.
 
 ## What Makes RecoverAI Different?
 
