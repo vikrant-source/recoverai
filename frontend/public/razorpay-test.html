@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RecoverAI — Razorpay Test Mode</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #0a0f1a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .card {
+      background: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 1rem;
+      padding: 2.5rem 2rem;
+      max-width: 480px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .badge-test {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: #451a03;
+      border: 1px solid #92400e;
+      color: #fbbf24;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.3rem 0.8rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      width: fit-content;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    p.sub {
+      color: #6b7280;
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .input-group label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #9ca3af;
+    }
+
+    .input-group input {
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      color: #f3f4f6;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .input-group input:focus {
+      border-color: #3b82f6;
+    }
+
+    .detail-grid {
+      background: #0d1424;
+      border: 1px solid #1f2937;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      display: none;
+    }
+
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.8rem;
+    }
+
+    .detail-row .label { color: #6b7280; }
+    .detail-row .value { color: #d1d5db; font-weight: 500; font-family: monospace; }
+    .detail-row .value.amount { color: #34d399; font-size: 1rem; font-weight: 700; }
+
+    .failure-tip {
+      background: #1a0f2e;
+      border: 1px solid #4c1d95;
+      border-radius: 0.75rem;
+      padding: 1rem 1.25rem;
+      font-size: 0.8rem;
+      color: #c4b5fd;
+      line-height: 1.6;
+    }
+
+    .failure-tip strong { color: #a78bfa; display: block; margin-bottom: 0.25rem; }
+
+    .failure-tip code {
+      background: #2e1065;
+      padding: 0.1em 0.4em;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #ddd6fe;
+    }
+
+    button#pay-btn {
+      background: #2563eb;
+      color: #ffffff;
+      border: none;
+      border-radius: 0.75rem;
+      padding: 0.85rem 1.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.15s;
+    }
+
+    button#pay-btn:hover:not(:disabled) { background: #1d4ed8; }
+    button#pay-btn:disabled { background: #374151; cursor: not-allowed; color: #6b7280; }
+
+    #status-msg {
+      font-size: 0.8rem;
+      color: #6b7280;
+      text-align: center;
+      min-height: 1.2em;
+    }
+
+    #status-msg.error { color: #f87171; }
+    #status-msg.success { color: #34d399; }
+
+    .back-link {
+      text-align: center;
+      font-size: 0.8rem;
+    }
+
+    .back-link a {
+      color: #4b5563;
+      text-decoration: none;
+    }
+
+    .back-link a:hover { color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge-test">&#9888; Razorpay Test Mode</div>
+
+    <div>
+      <h1>RecoverAI Test Checkout</h1>
+      <p class="sub" style="margin-top: 0.4rem;">
+        This maps a local transaction to a real Razorpay Test Mode checkout order.
+        No real money is charged.
+      </p>
+    </div>
+
+    <div class="input-group">
+      <label for="txn-input">Local Transaction ID</label>
+      <input type="text" id="txn-input" placeholder="e.g. txn_001" value="txn_001" />
+    </div>
+
+    <div class="detail-grid" id="detail-grid">
+      <div class="detail-row">
+        <span class="label">Local Txn ID</span>
+        <span class="value" id="local-txn">loading…</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Order ID</span>
+        <span class="value" id="order-id">loading…</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Amount</span>
+        <span class="value amount" id="amount">loading…</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Currency</span>
+        <span class="value" id="currency">loading…</span>
+      </div>
+      <div class="detail-row">
+        <span class="label">Key ID</span>
+        <span class="value" id="key-id">loading…</span>
+      </div>
+    </div>
+
+    <div class="failure-tip">
+      <strong>&#128100; How to test a payment failure</strong>
+      Use email <code>failure@razorpay.com</code> in the Razorpay checkout form to
+      simulate a failed payment. This triggers a <code>payment.failed</code> event.
+    </div>
+
+    <button id="pay-btn">Create Test Order & Checkout</button>
+    <div id="status-msg"></div>
+
+    <div class="back-link">
+      <a href="/">&#8592; Back to Dashboard</a>
+    </div>
+  </div>
+
+  <!-- Razorpay Standard Checkout SDK (CDN) -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+  <script>
+    (() => {
+      const btn = document.getElementById('pay-btn');
+      const statusMsg = document.getElementById('status-msg');
+      const txnInput = document.getElementById('txn-input');
+      const detailGrid = document.getElementById('detail-grid');
+      
+      const localTxnEl = document.getElementById('local-txn');
+      const orderIdEl = document.getElementById('order-id');
+      const amountEl = document.getElementById('amount');
+      const currencyEl = document.getElementById('currency');
+      const keyIdEl = document.getElementById('key-id');
+
+      btn.addEventListener('click', async () => {
+        const txnId = txnInput.value.trim();
+        if (!txnId) {
+          statusMsg.textContent = 'Please enter a transaction ID.';
+          statusMsg.className = 'error';
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Creating Order...';
+        statusMsg.textContent = '';
+        statusMsg.className = '';
+        detailGrid.style.display = 'none';
+
+        let cfg;
+        try {
+          const resp = await fetch('/api/razorpay-test/create-order', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ txn_id: txnId })
+          });
+
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Backend returned ${resp.status}`);
+          }
+          cfg = await resp.json();
+        } catch (e) {
+          statusMsg.textContent = 'Order creation failed: ' + e.message;
+          statusMsg.className = 'error';
+          btn.textContent = 'Create Test Order & Checkout';
+          btn.disabled = false;
+          return;
+        }
+
+        // Populate the details card
+        localTxnEl.textContent = cfg.txn_id;
+        orderIdEl.textContent = cfg.order_id;
+        amountEl.textContent = '₹' + (cfg.amount / 100).toLocaleString('en-IN');
+        currencyEl.textContent = cfg.currency;
+        keyIdEl.textContent = cfg.key_id.slice(0, 12) + '…';
+        
+        detailGrid.style.display = 'flex';
+
+        btn.textContent = 'Create Test Order & Checkout';
+        btn.disabled = false;
+
+        // Open Razorpay Checkout
+        const options = {
+          key: cfg.key_id,
+          amount: cfg.amount,
+          currency: cfg.currency,
+          name: 'RecoverAI',
+          description: `RecoverAI Test Mode — Synthetic payment for ${cfg.txn_id}`,
+          order_id: cfg.order_id,
+          modal: {
+            ondismiss: () => {
+              statusMsg.textContent = 'Checkout dismissed.';
+              statusMsg.className = '';
+            }
+          },
+          prefill: {
+            email: 'failure@razorpay.com',
+          },
+          theme: { color: '#2563eb' },
+          handler: function (response) {
+            statusMsg.textContent =
+              'Payment captured (success path): ' + response.razorpay_payment_id;
+            statusMsg.className = 'success';
+          }
+        };
+
+        const rzp = new Razorpay(options);
+
+        rzp.on('payment.failed', function (response) {
+          const code = response.error?.code ?? 'unknown';
+          const desc = response.error?.description ?? '';
+          statusMsg.textContent =
+            'Payment failed (' + code + '): ' + desc +
+            ' — A webhook was sent to the backend.';
+          statusMsg.className = 'error';
+        });
+
+        rzp.open();
+      });
+    })();
+  </script>
+</body>
+</html>

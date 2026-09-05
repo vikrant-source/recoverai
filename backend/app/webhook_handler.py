@@ -1,15 +1,12 @@
 """
-Webhook Handler — Phase 6.
+Webhook Handler.
 
 Entry point for POST /webhooks/payment. Implements idempotency and drives the
 recovery pipeline for payment.failed events.
 
-SYNTHETIC / TEST MODE ONLY
----------------------------
-payload.synthetic=True bypasses all Razorpay HMAC signature verification.
-No real payment API calls are made.
-For production: add HMAC verification before this function is invoked without
-changing this handler's interface or business logic.
+Accepts both synthetic and real Razorpay webhook events via WebhookInternalEvent.
+The normalisation / signature verification is done in main.py before this function
+is called, keeping this handler focused solely on idempotency + pipeline logic.
 
 Idempotency state machine
 -------------------------
@@ -54,7 +51,7 @@ from sqlalchemy.orm import Session
 from .context_builder import ContextLoadError, load_context
 from .models import WebhookEvent
 from .pipeline import run_recovery_pipeline
-from .webhook_schemas import WebhookPayload, WebhookResponse
+from .webhook_schemas import WebhookInternalEvent, WebhookResponse
 
 logger = logging.getLogger(__name__)
 
@@ -121,24 +118,30 @@ def _mark_failed(db: Session, event: WebhookEvent, error_message: str) -> None:
 
 def handle_payment_webhook(
     db: Session,
-    payload: WebhookPayload,
+    event: WebhookInternalEvent,
 ) -> WebhookResponse:
     """
     Process a payment webhook event through the full idempotency + pipeline flow.
 
+    Accepts a WebhookInternalEvent — a normalised canonical representation that
+    works for both synthetic and real Razorpay payloads. Callers (main.py) are
+    responsible for parsing, signature verification, and normalisation before
+    calling this function.
+
     Processing steps
     ----------------
     1.  Filter event_type — wrong type → IGNORED (no DB write).
-    2.  Idempotency check — existing row → DUPLICATE (no pipeline call).
-    3.  Write WebhookEvent (status=PROCESSING) — acts as idempotency lock.
+    2.  Check txn_id — None (no mapping) → IGNORED (no DB write).
+    3.  Idempotency check — existing row → DUPLICATE (no pipeline call).
+    4.  Write WebhookEvent (status=PROCESSING) — acts as idempotency lock.
         IntegrityError on concurrent duplicate → DUPLICATE.
-    4.  Load Transaction + Customer via context_builder.
+    5.  Load Transaction + Customer via context_builder.
         ContextLoadError → WebhookEvent=FAILED, return IGNORED.
-    5.  run_recovery_pipeline() → AI Brain → Policy Brakes → Executor.
+    6.  run_recovery_pipeline() → AI Brain → Policy Brakes → Executor.
         Executor commits Intervention + Transaction state internally.
         Unexpected exception → rollback, WebhookEvent=FAILED, return IGNORED.
-    6.  Mark WebhookEvent=COMPLETED (second commit).
-    7.  Return ACCEPTED with full execution details.
+    7.  Mark WebhookEvent=COMPLETED (second commit).
+    8.  Return ACCEPTED with full execution details.
 
     Returns HTTP 200 in all cases. See WebhookResponse.status for outcome.
     """
@@ -146,52 +149,82 @@ def handle_payment_webhook(
     # ------------------------------------------------------------------
     # Step 1: Filter by event_type — no DB interaction for wrong types.
     # ------------------------------------------------------------------
-    if payload.event_type != _PAYMENT_FAILED_EVENT:
+    if event.event_type != _PAYMENT_FAILED_EVENT:
         logger.info(
             "Event '%s' ignored: event_type='%s' is not handled.",
-            payload.event_id,
-            payload.event_type,
+            event.event_id,
+            event.event_type,
         )
         return WebhookResponse(
-            event_id=payload.event_id,
+            event_id=event.event_id,
             status="IGNORED",
-            txn_id=payload.txn_id,
+            txn_id=event.txn_id,
             message=(
-                f"Event type '{payload.event_type}' is not handled by this endpoint. "
+                f"Event type '{event.event_type}' is not handled by this endpoint. "
                 "Only 'payment.failed' events trigger recovery."
             ),
         )
 
     # ------------------------------------------------------------------
-    # Step 2: Idempotency check — any existing row blocks re-processing.
+    # Step 2: Reject unmapped events (real Razorpay without notes mapping).
     # ------------------------------------------------------------------
-    existing = _find_existing(db, payload.event_id)
+    if event.txn_id is None:
+        logger.info(
+            "Event '%s' ignored: no local txn_id could be mapped. "
+            "Add recoverai_txn_id to the Razorpay order notes.",
+            event.event_id,
+        )
+        return WebhookResponse(
+            event_id=event.event_id,
+            status="IGNORED",
+            txn_id=None,
+            message=(
+                "No local transaction mapping found for this Razorpay event. "
+                "Set notes.recoverai_txn_id on the Razorpay order to enable recovery."
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Step 3: Idempotency check — any existing row blocks re-processing.
+    # ------------------------------------------------------------------
+    existing = _find_existing(db, event.event_id)
     if existing is not None:
         logger.info(
             "Duplicate event '%s' (existing status=%s). Pipeline not re-run.",
-            payload.event_id,
+            event.event_id,
             existing.status,
         )
         return WebhookResponse(
-            event_id=payload.event_id,
+            event_id=event.event_id,
             status="DUPLICATE",
-            txn_id=payload.txn_id,
+            txn_id=event.txn_id,
             message=(
-                f"Event '{payload.event_id}' has already been received "
+                f"Event '{event.event_id}' has already been received "
                 f"(status={existing.status}). Recovery pipeline was not re-run."
             ),
         )
 
     # ------------------------------------------------------------------
-    # Step 3: Write WebhookEvent with status=PROCESSING.
+    # Step 4: Write WebhookEvent with status=PROCESSING.
     # This is the idempotency lock. The primary key constraint prevents
     # a second concurrent insert for the same event_id.
     # ------------------------------------------------------------------
+
+    # Build the audit payload — include event metadata and any audit_data
+    # from the normaliser, but never include secrets.
+    audit_payload: dict = {
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "txn_id": event.txn_id,
+        "synthetic": event.synthetic,
+    }
+    audit_payload.update(event.audit_data)
+
     webhook_event = WebhookEvent(
-        event_id=payload.event_id,
-        event_type=payload.event_type,
+        event_id=event.event_id,
+        event_type=event.event_type,
         status=_STATUS_PROCESSING,
-        payload=payload.model_dump(),
+        payload=audit_payload,
         created_at=_utc_now(),
     )
 
@@ -202,37 +235,37 @@ def handle_payment_webhook(
         db.rollback()
         logger.warning(
             "IntegrityError inserting event '%s': concurrent duplicate delivery.",
-            payload.event_id,
+            event.event_id,
         )
         return WebhookResponse(
-            event_id=payload.event_id,
+            event_id=event.event_id,
             status="DUPLICATE",
-            txn_id=payload.txn_id,
+            txn_id=event.txn_id,
             message=(
-                f"Event '{payload.event_id}' is already being processed "
+                f"Event '{event.event_id}' is already being processed "
                 "(concurrent delivery race detected)."
             ),
         )
 
     # ------------------------------------------------------------------
-    # Step 4: Load Transaction and Customer (read-only).
+    # Step 5: Load Transaction and Customer (read-only).
     # ------------------------------------------------------------------
     try:
-        transaction, customer = load_context(db, payload.txn_id)
+        transaction, customer = load_context(db, event.txn_id)
     except ContextLoadError as exc:
         logger.warning(
-            "Context load failed for event '%s': %s", payload.event_id, exc
+            "Context load failed for event '%s': %s", event.event_id, exc
         )
         _mark_failed(db, webhook_event, str(exc))
         return WebhookResponse(
-            event_id=payload.event_id,
+            event_id=event.event_id,
             status="IGNORED",
-            txn_id=payload.txn_id,
+            txn_id=event.txn_id,
             message=str(exc),
         )
 
     # ------------------------------------------------------------------
-    # Step 5: Run recovery pipeline.
+    # Step 6: Run recovery pipeline.
     #   AI Brain  → AIDecision   (read-only; never raises)
     #   Policy    → PolicyResult  (read-only; deterministic)
     #   Executor  → ExecutionResult (commits Intervention + Transaction)
@@ -242,28 +275,28 @@ def handle_payment_webhook(
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "Recovery pipeline raised unexpectedly for event '%s': %s",
-            payload.event_id,
+            event.event_id,
             exc,
         )
         db.rollback()
         _mark_failed(db, webhook_event, f"Pipeline error: {str(exc)[:470]}")
         return WebhookResponse(
-            event_id=payload.event_id,
+            event_id=event.event_id,
             status="IGNORED",
-            txn_id=payload.txn_id,
+            txn_id=event.txn_id,
             message="Recovery pipeline failed unexpectedly. Event recorded as FAILED.",
         )
 
     # ------------------------------------------------------------------
-    # Step 6: Mark WebhookEvent COMPLETED.
+    # Step 7: Mark WebhookEvent COMPLETED.
     # The Intervention is already durable (committed by the executor).
     # ------------------------------------------------------------------
     _mark_completed(db, webhook_event)
 
     return WebhookResponse(
-        event_id=payload.event_id,
+        event_id=event.event_id,
         status="ACCEPTED",
-        txn_id=payload.txn_id,
+        txn_id=event.txn_id,
         message="Recovery pipeline executed successfully.",
         execution_status=str(result.execution_status.value),
         final_action=str(result.final_action.value),

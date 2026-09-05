@@ -13,44 +13,27 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+# Use the shared engine from conftest to avoid cross-test-file override conflicts
+from tests.conftest import SHARED_ENGINE, SharedTestingSessionLocal, shared_override_get_db
 
 from app.main import app
 from app.database import Base, get_db
 from app.models import Customer, Transaction, WebhookEvent, Intervention
 from app.schemas import AIDecision, RecoveryAction
 
-from sqlalchemy.pool import StaticPool
-
-# Isolated test database
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def override_get_db():
-    try:
-        db = TestingSessionLocal()
-        yield db
-    finally:
-        db.close()
-
-app.dependency_overrides[get_db] = override_get_db
+app.dependency_overrides[get_db] = shared_override_get_db
 client = TestClient(app)
 
 class TestWebhookIntegration(unittest.TestCase):
     def setUp(self):
-        # Recreate the tables for every test
-        Base.metadata.create_all(bind=engine)
-        self.db = TestingSessionLocal()
+        # Recreate the tables for every test using the shared engine
+        Base.metadata.create_all(bind=SHARED_ENGINE)
+        self.db = SharedTestingSessionLocal()
         
         # Setup common test data
         self.now = datetime.now(timezone.utc)
@@ -76,11 +59,16 @@ class TestWebhookIntegration(unittest.TestCase):
         )
         self.db.add(self.test_transaction)
         self.db.commit()
+        
+        # Prevent real .env secrets from causing signature validation failures in tests
+        self.patcher = patch("app.razorpay_sig._get_webhook_secret", return_value=None)
+        self.patcher.start()
 
     def tearDown(self):
+        self.patcher.stop()
         self.db.close()
         # Drop all tables after the test
-        Base.metadata.drop_all(bind=engine)
+        Base.metadata.drop_all(bind=SHARED_ENGINE)
 
     def _mock_ai_decision(self, action=RecoveryAction.SILENT_RETRY):
         return AIDecision(
@@ -150,7 +138,8 @@ class TestWebhookIntegration(unittest.TestCase):
         self.assertEqual(len(interventions), 1)
 
     def test_malformed_payload_returns_422(self):
-        # Missing required 'event_id'
+        # Missing required 'event_id' — also missing 'txn_id', no 'synthetic' key
+        # so it falls into Razorpay path. Missing 'event' field → 422.
         payload = {
             "event_type": "payment.failed",
             "txn_id": "txn_webhook_001"
